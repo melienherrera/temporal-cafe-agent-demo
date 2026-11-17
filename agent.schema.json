@@ -1,0 +1,58 @@
+{
+  "agent": "BaristaAgent",
+  "source": "my_agent.workflow:BaristaAgentWorkflow",
+  "init_data": null,
+  "handlers": {
+    "order": {
+      "description": "Order a coffee in plain language. The barista may ask a quick question, checks the\nmenu and milk, then makes your drink (with a quick approval).",
+      "mid_turn": "reject",
+      "input": {
+        "$ref": "#/$defs/TextMessage"
+      },
+      "output": {
+        "$ref": "#/$defs/TextReply"
+      }
+    },
+    "ping": {
+      "description": "Check the worker connection without calling a model.",
+      "mid_turn": "reject",
+      "input": {
+        "$ref": "#/$defs/TextMessage"
+      },
+      "output": {
+        "$ref": "#/$defs/TextReply"
+      }
+    }
+  },
+  "states": {},
+  "$defs": {
+    "TextMessage": {
+      "description": "Free-form natural-language text from the user (the input to a plain chat handler).",
+      "properties": {
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "TextMessage",
+      "type": "object"
+    },
+    "TextReply": {
+      "description": "A free-form natural-language reply (the output of a plain chat handler).",
+      "properties": {
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "TextReply",
+      "type": "object"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+[[agents]]
+key = "barista"
+workflow_type = "BaristaAgent"
+task_queue = "barista"
+label = "Barista (Python)"
+description = "A café barista agent: natural-language orders, menu and milk tools, and an approval before it makes your drink."
+schema = "agent.schema.json"

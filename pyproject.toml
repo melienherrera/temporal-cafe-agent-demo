@@ -1,0 +1,16 @@
+[project]
+name = "cafe-agent"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "openai==3.8.0",
+    "openai-agents==0.22.0",
+    "temporal-agent-harness[ui,openai-agents]==0.11.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["my_agent*"]
