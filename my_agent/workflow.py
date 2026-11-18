@@ -1,11 +1,16 @@
-from __future__ import annotations
+import os
+from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.contrib.workflow_streams import WorkflowStream
 
 with workflow.unsafe.imports_passed_through():
+    import httpx
     from agents import Agent as OpenAIAgent
     from agents import Runner, TResponseInputItem
+    from pydantic import BaseModel, Field
+    from temporalio.common import RetryPolicy
+    from temporalio.workflow import ActivityConfig
 
     from temporal_agent_harness.ai_sdks.openai_agents_harness import as_openai_agent_tool
     from temporal_agent_harness.harness import agent
@@ -21,6 +26,52 @@ with workflow.unsafe.imports_passed_through():
 TASK_QUEUE = "barista"
 DEFAULT_MODEL = "gpt-5.1"
 
+# External services the agent's activity tools call. Both reads/writes become durable
+# Temporal activities, so a crash or a flaky response is retried, not lost.
+POS_URL = os.environ.get("POS_URL", "http://localhost:9000")
+OFF_SEARCH_URL = "https://search.openfoodfacts.org/search"
+HTTP_UA = "MelissaCafeBaristaAgent/0.1 (Durable AI demo)"
+
+# Pricing, in cents. The agent quotes this before placing the order, and `place_order`
+# charges exactly it — computed from stable inputs so a retry charges the same amount.
+SIZE_PRICE_CENTS = {"small": 450, "medium": 525, "large": 600}
+ALT_MILK_SURCHARGE_CENTS = 65
+ALT_MILKS = {"oat", "almond", "cashew", "soy", "coconut"}
+
+
+def _price_cents(size: str, milk: str) -> int:
+    """Unit price of one drink, in cents, from its size and milk. Pure Python — the model
+    never computes prices; it only assembles the cart."""
+    base = SIZE_PRICE_CENTS.get(size.strip().lower(), SIZE_PRICE_CENTS["medium"])
+    if milk.strip().lower() in ALT_MILKS:
+        base += ALT_MILK_SURCHARGE_CENTS
+    return base
+
+
+class OrderItem(BaseModel):
+    """One line in a café order. The model fills these in from the conversation; it does not
+    price them."""
+
+    drink: str = Field(..., description="The drink, e.g. 'oat latte' or 'cortado'.")
+    milk: str = Field("whole", description="Milk to use, e.g. 'whole', 'oat', 'almond'.")
+    size: str = Field("medium", description="One of: small, medium, large.")
+    quantity: int = Field(1, ge=1, description="How many of this exact drink.")
+
+
+def _price_order(items: list[OrderItem]) -> tuple[list[tuple[OrderItem, int]], int]:
+    """Itemize and total a cart, in cents — all arithmetic in Python, none in the model.
+
+    Returns (lines, total_cents) where each line is (item, line_total_cents) and a line total
+    is the unit price times quantity."""
+    lines = [(it, _price_cents(it.size, it.milk) * it.quantity) for it in items]
+    total_cents = sum(line_total for _, line_total in lines)
+    return lines, total_cents
+
+
+def _describe_item(it: OrderItem) -> str:
+    qty = f"{it.quantity}x " if it.quantity != 1 else ""
+    return f"{qty}{it.size} {it.drink} ({it.milk} milk)"
+
 SYSTEM_INSTRUCTION = """\
 You are a warm, friendly barista at Melissa's Café. Customers order in plain language and may
 not know exactly what they want.
@@ -31,8 +82,14 @@ How you work:
   question at a time — don't interrogate.
 - Stay honest with your tools: call `get_menu` to see what's on offer, and `check_milk` before
   promising a milk — don't guess what's in stock.
-- When you have enough to make a great drink, call `make_drink` to prepare it. Making a drink
-  needs a quick barista approval; that's expected.
+- If the customer asks about allergens or dietary fit (vegan, gluten, nut-free, "is oat milk
+  dairy?"), call `check_ingredient` to look it up before answering. Don't guess dietary facts.
+- A customer may order several drinks. Collect every item first (drink, size, milk, quantity).
+  You may tell them an individual item's price from the PRICING in `get_menu`, but NEVER add
+  prices up yourself and never guess a total — that's the register's job. When the order is
+  settled, call `place_order` with the full list of items; it computes the itemized total,
+  charges it, and returns the receipt. Report the order number and total from that result.
+  Placing an order takes payment, so it needs a quick approval — that's expected.
 - Keep replies warm and brief, like a real counter chat. If the customer is unsure, suggest
   something you'd recommend."""
 
@@ -104,7 +161,14 @@ async def get_menu() -> str:
         "London fog — Earl Grey, vanilla, and steamed milk.\n"
         "Golden milk — turmeric, ginger, honey, and steamed milk. No caffeine.\n"
         "Hot chocolate — dark chocolate and steamed milk.\n"
-        "Steamer — steamed milk and a syrup (vanilla, brown sugar, lavender, rose). No caffeine."
+        "Steamer — steamed milk and a syrup (vanilla, brown sugar, lavender, rose). No caffeine.\n"
+        "\n"
+        "PRICING (quote this exactly — it's what the register charges)\n"
+        f"Small ${SIZE_PRICE_CENTS['small'] / 100:.2f}, "
+        f"Medium ${SIZE_PRICE_CENTS['medium'] / 100:.2f}, "
+        f"Large ${SIZE_PRICE_CENTS['large'] / 100:.2f}.\n"
+        f"Add ${ALT_MILK_SURCHARGE_CENTS / 100:.2f} for a non-dairy milk "
+        f"({', '.join(sorted(ALT_MILKS))})."
     )
 
 
@@ -126,29 +190,112 @@ async def check_milk(kind: str) -> str:
     return f"{kind.strip().title()} milk is {status}."
 
 
-@agent.tool_defn(inherently_safe=False)
-async def make_drink(drink: str, milk: str = "whole", iced: bool = False, notes: str = "") -> str:
-    """Prepare and serve a drink. Requires barista approval before it runs.
+@agent.activity_tool_defn(
+    inherently_safe=True,  # read-only external lookup; safe to run without approval
+    activity_config=ActivityConfig(
+        start_to_close_timeout=timedelta(seconds=15),
+        retry_policy=RetryPolicy(
+            initial_interval=timedelta(seconds=1), maximum_attempts=4
+        ),
+    ),
+)
+async def check_ingredient(item: str) -> str:
+    """Look up allergen and dietary info for an ingredient or product via Open Food Facts.
 
-    `drink` is the drink to make, e.g. "oat latte"; `milk` the milk to use; `iced` true for an
-    iced drink; `notes` any extras like "extra shot" or "light sweetness"."""
-    temp = "iced" if iced else "hot"
-    extra = f" ({notes})" if notes else ""
-    return f"☕ Order up: a {temp} {drink} with {milk} milk{extra}. Pulled a clean double shot — enjoy!"
+    Runs as a durable Temporal activity: a real HTTP read to an external database, retried
+    automatically if it fails. `item` is a free-text ingredient or product, e.g. "oat milk",
+    "almond milk", "vanilla syrup". Returns the top match's allergens and vegan/vegetarian
+    tags — honest data for answering a dietary question."""
+    async with httpx.AsyncClient(timeout=10.0, headers={"User-Agent": HTTP_UA}) as client:
+        resp = await client.get(
+            OFF_SEARCH_URL,
+            params={
+                "q": item,
+                "page_size": 1,
+                "fields": "product_name,brands,allergens_tags,ingredients_analysis_tags",
+            },
+        )
+        resp.raise_for_status()
+        hits = resp.json().get("hits") or []
+
+    if not hits:
+        return f"No Open Food Facts match for {item!r} — I can't confirm its dietary info."
+
+    top = hits[0]
+    name = top.get("product_name") or item
+    allergens = [t.split(":", 1)[-1] for t in (top.get("allergens_tags") or [])]
+    diet = [t.split(":", 1)[-1] for t in (top.get("ingredients_analysis_tags") or [])]
+    allergen_text = ", ".join(allergens) if allergens else "none listed"
+    diet_text = ", ".join(diet) if diet else "no dietary tags"
+    return f"Top match for {item!r}: {name}. Allergens: {allergen_text}. Tagged: {diet_text}."
+
+
+@agent.activity_tool_defn(
+    inherently_safe=False,  # takes payment -> gated for human approval (HITL)
+    activity_config=ActivityConfig(
+        start_to_close_timeout=timedelta(seconds=15),
+        retry_policy=RetryPolicy(
+            initial_interval=timedelta(seconds=1), maximum_attempts=5
+        ),
+    ),
+)
+async def place_order(items: list[OrderItem], idempotency_key: agent.Injected[str]) -> str:
+    """Charge for a whole order (one or more drinks) and send it to the counter. Requires
+    approval before it runs.
+
+    Runs as a durable Temporal activity against the café POS. The total is computed HERE in
+    Python from `items` — never by the model — so it's always right and matches what the POS
+    charges. `idempotency_key` is supplied by the workflow (the model never sets it): the POS
+    dedupes on it, so a retry, or a resume after a worker crash mid-charge, returns the same
+    order instead of charging twice.
+
+    `items` is the cart: each entry is a drink with its milk, size, and quantity."""
+    lines, total_cents = _price_order(items)
+    description = "; ".join(_describe_item(it) for it in items)
+
+    async with httpx.AsyncClient(timeout=10.0, headers={"User-Agent": HTTP_UA}) as client:
+        resp = await client.post(
+            f"{POS_URL}/orders",
+            json={
+                "idempotency_key": idempotency_key,
+                "drink": description,
+                "milk": "mixed" if len({it.milk for it in items}) > 1 else items[0].milk,
+                "size": "mixed" if len({it.size for it in items}) > 1 else items[0].size,
+                "amount_cents": total_cents,
+            },
+        )
+        resp.raise_for_status()
+        receipt = resp.json()
+
+    line_text = "\n".join(
+        f"  • {_describe_item(it)} — ${line_total / 100:.2f}" for it, line_total in lines
+    )
+    total = receipt["amount_cents"] / 100
+    note = " (already paid — not charged again)" if receipt.get("deduped") else ""
+    return (
+        f"☕ Order {receipt['order_id']} is paid{note}:\n{line_text}\n"
+        f"  Total: ${total:.2f}. Sent to the counter — enjoy!"
+    )
+
+
+# The agent's full toolset. Pass this to AgentHarnessPlugin(tools=...) on the worker: it
+# registers the durable activity bodies of the activity tools (check_ingredient, place_order)
+# and skips the inline ones (get_menu, check_milk), which have no worker-side body.
+TOOLS = [get_menu, check_milk, check_ingredient, place_order]
 
 
 @agent.defn(name="BaristaAgent")
 class BaristaAgentWorkflow:
     """A café barista driven by the OpenAI Agents SDK: takes natural-language orders, checks the
-    menu and milk, and makes the drink after a human approval."""
+    menu, milk, and dietary info, then charges and places the order after a human approval."""
 
     @agent.init
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
             stream=WorkflowStream(),
-            # Safe tools (get_menu, check_milk) run directly; make_drink is not marked safe,
-            # so it pauses for approval in the console before the drink is made.
+            # Safe tools (get_menu, check_milk, check_ingredient) run directly; place_order
+            # is not marked safe, so it pauses for approval in the console before it charges.
             approval_policy_default=ToolApprovalPolicy.allow_inherently_safe(),
         )
         self._conversation: list[TResponseInputItem] = []
@@ -162,6 +309,11 @@ class BaristaAgentWorkflow:
     async def order(self, message: TextMessage) -> TextReply:
         """Order a coffee in plain language. The barista may ask a quick question, checks the
         menu and milk, then makes your drink (with a quick approval)."""
+        # One stable, replay-safe idempotency key per order turn. workflow.uuid4() is
+        # deterministic under replay, so the SAME key reaches place_order on every retry —
+        # that's what makes the POS charge exactly-once. The model never sees it (Injected).
+        idempotency_key = str(workflow.uuid4())
+
         sdk_agent = OpenAIAgent(
             name="Barista",
             instructions=SYSTEM_INSTRUCTION,
@@ -169,7 +321,12 @@ class BaristaAgentWorkflow:
             tools=[
                 as_openai_agent_tool(self._runner, get_menu),
                 as_openai_agent_tool(self._runner, check_milk),
-                as_openai_agent_tool(self._runner, make_drink),
+                as_openai_agent_tool(self._runner, check_ingredient),
+                as_openai_agent_tool(
+                    self._runner,
+                    place_order,
+                    injections={"idempotency_key": idempotency_key},
+                ),
             ],
         )
         input_items: list[TResponseInputItem] = [

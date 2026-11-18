@@ -20,7 +20,7 @@ from temporal_agent_harness.ai_sdks.openai_agents_harness import (
 )
 from temporal_agent_harness.utils.task_queue import task_queue_name
 
-from my_agent.workflow import TASK_QUEUE, BaristaAgentWorkflow
+from my_agent.workflow import TASK_QUEUE, TOOLS, BaristaAgentWorkflow
 
 
 async def main() -> None:
@@ -32,9 +32,9 @@ async def main() -> None:
 
     task_queue = task_queue_name(TASK_QUEUE)
 
-    # `ping` needs no model, so the worker starts without a key; only `ask` fails without one.
+    # `ping` needs no model, so the worker starts without a key; only `order` fails without one.
     if not os.environ.get("OPENAI_API_KEY"):
-        logging.warning("OPENAI_API_KEY is not set: `ping` works, `ask` will fail until it is (see env.example)")
+        logging.warning("OPENAI_API_KEY is not set: `ping` works, `order` will fail until it is (see env.example)")
 
     plugin = OpenAIAgentsPlugin(
         model_params=ModelActivityParameters(
@@ -54,16 +54,16 @@ async def main() -> None:
     connect_config = ClientConfig.load_client_connect_config()
     connect_config.setdefault("target_host", "localhost:7233")
     client = await Client.connect(
-        **connect_config, plugins=[plugin, AgentHarnessPlugin()]
+        **connect_config, plugins=[plugin, AgentHarnessPlugin(tools=TOOLS)]
     )
 
     worker = Worker(
         client,
         task_queue=task_queue,
         workflows=[BaristaAgentWorkflow],
-        # No activities to declare: get_weather is an inline workflow tool, the OpenAI model
-        # activities (incl. invoke_model_activity_streaming) come from the OpenAI plugin, and
-        # the harness's own activities come from AgentHarnessPlugin.
+        # No activities declared here: AgentHarnessPlugin(tools=TOOLS) registers the durable
+        # bodies of the activity tools (check_ingredient, place_order) and skips the inline
+        # ones; the OpenAI model activities come from the OpenAI plugin.
     )
     print(
         f"Barista agent worker ready: "
