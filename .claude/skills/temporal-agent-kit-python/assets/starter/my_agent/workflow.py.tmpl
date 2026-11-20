@@ -7,15 +7,15 @@ with workflow.unsafe.imports_passed_through():
     from agents import Agent as OpenAIAgent
     from agents import Runner, TResponseInputItem
 
-    from temporal_agent_harness.ai_sdks.openai_agents_harness import as_openai_agent_tool
-    from temporal_agent_harness.harness import agent
-    from temporal_agent_harness.harness.agent_protocol import (
+    from temporal_agent_kit.ai_sdks.openai_agents import as_openai_agent_tool
+    from temporal_agent_kit import agent
+    from temporal_agent_kit.agent_protocol import (
         AgentConfig,
         TextMessage,
         TextReply,
         ToolApprovalPolicy,
     )
-    from temporal_agent_harness.harness.agent_workflow import AgentWorkflowRunner
+    from temporal_agent_kit.agent_workflow import AgentWorkflowRunner
 
 
 TASK_QUEUE = "openai-hello"
@@ -73,7 +73,7 @@ class OpenAIHelloAgentWorkflow:
         ]
 
         # run_streamed returns immediately; iterate its events to drive the turn to completion.
-        # context=self._runner threads the harness runner to the streaming activity so the
+        # context=self._runner threads the Agent Kit runner to the streaming activity so the
         # plugin can route live events to this turn's stream.
         result = Runner.run_streamed(sdk_agent, input=input_items, context=self._runner)
         async for _event in result.stream_events():

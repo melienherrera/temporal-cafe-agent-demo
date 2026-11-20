@@ -9,16 +9,16 @@ from temporalio.client import Client
 from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
-from temporal_agent_harness.plugin import AgentHarnessPlugin
-from temporal_agent_harness.ai_sdks.openai_agents import (
+from temporal_agent_kit.plugin import AgentKitPlugin
+from temporal_agent_kit.ai_sdks.openai_agents import (
     ModelActivityParameters,
     OpenAIAgentsPlugin,
 )
-from temporal_agent_harness.ai_sdks.openai_agents_harness import (
-    harness_observer_factory,
+from temporal_agent_kit.ai_sdks.openai_agents import (
+    kit_observer_factory,
     stream_to_provider,
 )
-from temporal_agent_harness.utils.task_queue import task_queue_name
+from temporal_agent_kit.utils.task_queue import task_queue_name
 
 from my_agent.workflow import TASK_QUEUE, TOOLS, BaristaAgentWorkflow
 
@@ -45,7 +45,7 @@ async def main() -> None:
             # The harness streaming seam: route streamed events to the in-flight turn.
             stream_to_provider=stream_to_provider,
         ),
-        observer_factory=harness_observer_factory,
+        observer_factory=kit_observer_factory,
     )
 
     # Two plugins, harness LAST so the OpenAI plugin's (OpenAI-aware, pydantic-compatible)
@@ -54,14 +54,14 @@ async def main() -> None:
     connect_config = ClientConfig.load_client_connect_config()
     connect_config.setdefault("target_host", "localhost:7233")
     client = await Client.connect(
-        **connect_config, plugins=[plugin, AgentHarnessPlugin(tools=TOOLS)]
+        **connect_config, plugins=[plugin, AgentKitPlugin(tools=TOOLS)]
     )
 
     worker = Worker(
         client,
         task_queue=task_queue,
         workflows=[BaristaAgentWorkflow],
-        # No activities declared here: AgentHarnessPlugin(tools=TOOLS) registers the durable
+        # No activities declared here: AgentKitPlugin(tools=TOOLS) registers the durable
         # bodies of the activity tools (check_ingredient, place_order) and skips the inline
         # ones; the OpenAI model activities come from the OpenAI plugin.
     )

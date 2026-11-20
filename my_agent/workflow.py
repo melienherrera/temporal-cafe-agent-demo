@@ -12,15 +12,15 @@ with workflow.unsafe.imports_passed_through():
     from temporalio.common import RetryPolicy
     from temporalio.workflow import ActivityConfig
 
-    from temporal_agent_harness.ai_sdks.openai_agents_harness import as_openai_agent_tool
-    from temporal_agent_harness.harness import agent
-    from temporal_agent_harness.harness.agent_protocol import (
+    from temporal_agent_kit.ai_sdks.openai_agents import as_openai_agent_tool
+    from temporal_agent_kit import agent
+    from temporal_agent_kit.agent_protocol import (
         AgentConfig,
         TextMessage,
         TextReply,
         ToolApprovalPolicy,
     )
-    from temporal_agent_harness.harness.agent_workflow import AgentWorkflowRunner
+    from temporal_agent_kit.agent_workflow import AgentWorkflowRunner
 
 
 TASK_QUEUE = "barista"
@@ -278,7 +278,7 @@ async def place_order(items: list[OrderItem], idempotency_key: agent.Injected[st
     )
 
 
-# The agent's full toolset. Pass this to AgentHarnessPlugin(tools=...) on the worker: it
+# The agent's full toolset. Pass this to AgentKitPlugin(tools=...) on the worker: it
 # registers the durable activity bodies of the activity tools (check_ingredient, place_order)
 # and skips the inline ones (get_menu, check_milk), which have no worker-side body.
 TOOLS = [get_menu, check_milk, check_ingredient, place_order]

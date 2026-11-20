@@ -1,28 +1,28 @@
 # Python authoring
 
-Install `temporal-agent-harness` with the integration extra you use: `openai-agents`, `genai`,
+Install `temporal-agent-kit` with the integration extra you use: `openai-agents`, `genai`,
 `pydantic-ai`, `strands-agents`, or `typesafe`. `ui` adds the web server dependencies; `code-mode` adds the sandbox.
-Pin the package and lock dependencies. Use `temporal-agent-harness init ./my-agent` for the bundled
+Pin the package and lock dependencies. Use `temporal-agent-kit init ./my-agent` for the bundled
 OpenAI example, then follow its README. To keep an existing project, adapt only the needed files.
 The same starter is installed with this skill under `assets/starter/`; read
 `my_agent/workflow.py.tmpl` and `my_agent/worker.py.tmpl` there for the complete wiring.
 
 Public entry points:
 
-- `temporal_agent_harness.harness.agent`: `defn`, `init`, `accepts`, `state`, tool declarations.
-- `temporal_agent_harness.harness.agent_workflow.AgentWorkflowRunner`: runner for tools and turns.
-- `temporal_agent_harness.harness.agent_protocol`: `AgentConfig`, `TextMessage`, `TextReply`,
+- `temporal_agent_kit.agent`: `defn`, `init`, `accepts`, `state`, tool declarations.
+- `temporal_agent_kit.agent_workflow.AgentWorkflowRunner`: runner for tools and turns.
+- `temporal_agent_kit.agent_protocol`: `AgentConfig`, `TextMessage`, `TextReply`,
   `ToolApprovalPolicy`, and `MidTurn`.
-- `temporal_agent_harness.plugin.AgentHarnessPlugin`: registration and payload conversion.
+- `temporal_agent_kit.plugin.AgentKitPlugin`: registration and payload conversion.
 
 A minimal agent, with a safe inline tool and a model-free handler:
 
 ```python
 from temporalio.contrib.workflow_streams import WorkflowStream
 
-from temporal_agent_harness.harness import agent
-from temporal_agent_harness.harness.agent_protocol import AgentConfig, TextMessage, TextReply, ToolApprovalPolicy
-from temporal_agent_harness.harness.agent_workflow import AgentWorkflowRunner
+from temporal_agent_kit import agent
+from temporal_agent_kit.agent_protocol import AgentConfig, TextMessage, TextReply, ToolApprovalPolicy
+from temporal_agent_kit.agent_workflow import AgentWorkflowRunner
 
 
 @agent.tool_defn(inherently_safe=True)
@@ -55,22 +55,22 @@ with `@agent.tool_defn` for deterministic workflow work or `@agent.activity_tool
 Use `ToolApprovalPolicy.allow_inherently_safe()` to automatically permit tools explicitly marked
 safe; other tools remain gated. Do not disable all approvals merely to make an example run.
 
-For OpenAI, use the harness's `OpenAIAgentsPlugin` and `as_openai_agent_tool`. The starter shows
-`stream_to_provider`, `harness_observer_factory`, and consuming `Runner.run_streamed` events:
-all are necessary for the harness streaming path. Add `AgentHarnessPlugin` last on the Temporal
+For OpenAI, use Agent Kit's `OpenAIAgentsPlugin` and `as_openai_agent_tool`. The starter shows
+`stream_to_provider`, `kit_observer_factory`, and consuming `Runner.run_streamed` events:
+all are necessary for the Agent Kit streaming path. Add `AgentKitPlugin` last on the Temporal
 client, then construct its worker. Activity tools belong in the plugin's `tools` registration.
 
-For Strands Agents, build the agent in `@agent.init` with `harness_strands_agent(runner, ...)` from
-`ai_sdks.strands_agents_harness`, passing harness tools through `as_strands_tool(runner, ...)` and
+For Strands Agents, build the agent in `@agent.init` with `kit_strands_agent(runner, ...)` from
+`ai_sdks.strands_agents`, passing Agent Kit tools through `as_strands_tool(runner, ...)` and
 MCP servers as `TemporalMCPClient(name)`; every call runs under the approval policy. On the worker,
-register `StrandsPlugin(models=..., observer_factory=harness_observer_factory)` before
-`AgentHarnessPlugin`. Strands interrupts are refused: use a callback tool to ask a person.
+register `StrandsPlugin(models=..., observer_factory=kit_observer_factory)` before
+`AgentKitPlugin`. Strands interrupts are refused: use a callback tool to ask a person.
 
-Generate schemas with `temporal-agent-harness schema module:Class -o Agent.schema.json`.
+Generate schemas with `temporal-agent-kit schema module:Class -o Agent.schema.json`.
 An application module must be installed or importable from the current project. Required init
 data produces a startup form in the console. Keep workflow name, registry name, and schema aligned.
 
-Run the local stack with `temporal-agent-harness dev agents.toml` (session manager plus API and
+Run the local stack with `temporal-agent-kit dev agents.toml` (session manager plus API and
 console in one process) beside Temporal and the agent worker. Use
-`temporal-agent-harness doctor --registry agents.toml` to diagnose it. `--json` is suitable for
+`temporal-agent-kit doctor --registry agents.toml` to diagnose it. `--json` is suitable for
 scripts; a failed check exits nonzero. It never starts or resets services.

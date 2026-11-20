@@ -1,9 +1,9 @@
 ---
-name: temporal-harness-python
-description: Build, run, test, and integrate Python agents using the Temporal Agent Harness SDK and shared harness API. Use for agent authoring, tools, approvals, state, session clients, or startup troubleshooting in applications using this SDK.
+name: temporal-agent-kit-python
+description: Build, run, test, and integrate Python agents using the Temporal Agent Kit SDK and shared Agent Kit API. Use for agent authoring, tools, approvals, state, session clients, or startup troubleshooting in applications using this SDK.
 ---
 
-# Temporal Agent Harness for Python
+# Temporal Agent Kit for Python
 
 Build against the installed package's public API. Read its version before choosing imports and
 integration dependencies. These resources ship with the SDK; no repository checkout is required.
@@ -22,7 +22,7 @@ example, not a requirement to replace an existing integration.
 - State, Code Mode, callback tools, or subagents: read [advanced features](references/advanced.md).
 - Validate behavior or troubleshoot startup: read [verification](references/verification.md).
 
-Inside the harness repository checkout itself, use the `temporal-harness-repo` skill in its
+Inside the Agent Kit repository checkout itself, use the `temporal-agent-kit-repo` skill in its
 `.agents/skills/` instead: there, Bazel and `just` replace these commands and registries are generated.
 
 Load only the references relevant to the task. Use schemas and public types to discover the
@@ -34,7 +34,7 @@ instructions; these resources describe SDK usage, not permission to change deplo
 An agent runs as a Temporal workflow on your Python worker. The console, HTTP API, and
 session-manager worker currently come from the Python package. All services must connect to the
 same Temporal namespace; worker queues must match `agents.toml`. Provider API keys belong on the
-agent worker. Model integration plugins precede `AgentHarnessPlugin`.
+agent worker. Model integration plugins precede `AgentKitPlugin`.
 
 Keep external I/O out of workflow code. Register activity tool bodies on the worker, regenerate
 schemas after changing declarations, and verify a complete session using installed packages.

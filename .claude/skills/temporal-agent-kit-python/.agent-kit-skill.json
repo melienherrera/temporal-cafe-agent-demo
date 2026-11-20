@@ -1,0 +1,20 @@
+{
+  "name": "temporal-agent-kit-python",
+  "version": "0.12.0",
+  "files": {
+    "SKILL.md": "445632085f302114c54721ec01dcc71540a28df705127aa07d6d135a25973af2",
+    "agents/openai.yaml": "9d19a63fb196fe33aa9832bde86ee1e1b7c5f519176f8963d76ec1d781f1a177",
+    "assets/starter/README.md.tmpl": "68ab4244660e1f22e1b0cd687b423c33e396901cd22b7af477112fb9c607269f",
+    "assets/starter/agents.toml.tmpl": "53f160d09e1d790dd649f55e26b17ac474c34041cef36984f8bb9bbc86197684",
+    "assets/starter/env.example.tmpl": "a855be5f2fbb587f035fe3329a75318b2408cdf84c0c6380323e0ae69a667701",
+    "assets/starter/gitignore.tmpl": "395fb8f1e433b05f5557990366c0baa65df1e5bd964c6d7cd83262f0b39ef1d5",
+    "assets/starter/my_agent/__init__.py.tmpl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "assets/starter/my_agent/worker.py.tmpl": "78725cebb8918c33744417a7e21318b6f1434533aaad929a2c4db4c1de819400",
+    "assets/starter/my_agent/workflow.py.tmpl": "f2c98e3181e6876819deecac8ec12b09822a7bc10a1d5f9c50585f90bb977154",
+    "assets/starter/pyproject.toml.tmpl": "134a94754222a75917c7b305210e59ea2dd588fb17565de0fb6e9bb2d2de8d1c",
+    "references/advanced.md": "89cc512679c3f669043d63adab1891d788fcf8e00f6f7c5c74263f5833e445bf",
+    "references/api.md": "54787e65c5bd26c6c86b729463eb45b1967623a9df46218357d241a62d17d5bf",
+    "references/authoring.md": "365fb8f88d704e76638fea5b7dc2ba54fff7989f19f4f8ad966730cfea438043",
+    "references/verification.md": "c1d02a518a4630201d40e5d4749ec7bd027d4cd6e6cca7418029929ce5f65636"
+  }
+}

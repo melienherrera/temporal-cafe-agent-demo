@@ -10,7 +10,7 @@ Prefer a small change to the working starter over copying internal runtime imple
   the requesting agent and tool IDs, especially for subagents. See `api.md` for HTTP calls.
 - **Callbacks:** the tool implementation runs on the client; model execution waits for a result.
   Use the application client's callback handlers or pending callback interface.
-- **Subagents:** expose typed handlers and compose through the harness subagent APIs. Follow
+- **Subagents:** expose typed handlers and compose through the Agent Kit subagent APIs. Follow
   events using their agent identity rather than flattening the tree into the parent's transcript.
 - **Code Mode:** requires the optional Monty sandbox dependency on the worker. Expose an explicit
   toolset; scripts run against those host functions. Filesystem mounts and durable activity
@@ -24,11 +24,11 @@ and TypeScript model integrations or advanced feature signatures are interchange
 
 ## Add observable state to the starter
 
-Import `HarnessState` from `temporal_agent_harness.harness.state`. Define a model outside the
+Import `AgentState` from `temporal_agent_kit.state`. Define a model outside the
 agent and declare its state as a class attribute:
 
 ```python
-class Counter(HarnessState):
+class Counter(AgentState):
     messages: int = 0
 
 # Inside OpenAIHelloAgentWorkflow:
@@ -47,7 +47,7 @@ Read `self.counter.current` for the current value. Do not hold a mutation contex
 | Work | Public declaration | Registration |
 | --- | --- | --- |
 | Deterministic, fast computation | `@agent.tool_defn` | Adapt it through the model integration |
-| External I/O, database or provider calls | `@agent.activity_tool_defn` | Also pass it in `AgentHarnessPlugin(tools=[...])` |
+| External I/O, database or provider calls | `@agent.activity_tool_defn` | Also pass it in `AgentKitPlugin(tools=[...])` |
 | Browser/user environment | `@agent.callback_tool_defn` | Supply the result through the application client |
 
 Keep the decorated activity body importable on the worker. Set timeouts and make side effects
