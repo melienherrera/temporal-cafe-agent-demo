@@ -1,5 +1,6 @@
 import os
 from datetime import timedelta
+from typing import Annotated
 
 from temporalio import workflow
 from temporalio.contrib.workflow_streams import WorkflowStream
@@ -10,6 +11,7 @@ with workflow.unsafe.imports_passed_through():
     from agents import Runner, TResponseInputItem
     from pydantic import BaseModel, Field
     from temporalio.common import RetryPolicy
+    from temporalio.exceptions import ApplicationError
     from temporalio.workflow import ActivityConfig
 
     from temporal_agent_kit.ai_sdks.openai_agents import as_openai_agent_tool
@@ -68,6 +70,12 @@ def _price_order(items: list[OrderItem]) -> tuple[list[tuple[OrderItem, int]], i
     return lines, total_cents
 
 
+def _fmt_cents(cents: int) -> str:
+    """Canonical money string: 1780 -> '$17.80'. One formatter so the quote the customer sees,
+    the total on the approval card, and `place_order`'s re-check all agree to the character."""
+    return f"${cents / 100:.2f}"
+
+
 def _describe_item(it: OrderItem) -> str:
     qty = f"{it.quantity}x " if it.quantity != 1 else ""
     return f"{qty}{it.size} {it.drink} ({it.milk} milk)"
@@ -84,12 +92,12 @@ How you work:
   promising a milk — don't guess what's in stock.
 - If the customer asks about allergens or dietary fit (vegan, gluten, nut-free, "is oat milk
   dairy?"), call `check_ingredient` to look it up before answering. Don't guess dietary facts.
-- A customer may order several drinks. Collect every item first (drink, size, milk, quantity).
-  You may tell them an individual item's price from the PRICING in `get_menu`, but NEVER add
-  prices up yourself and never guess a total — that's the register's job. When the order is
-  settled, call `place_order` with the full list of items; it computes the itemized total,
-  charges it, and returns the receipt. Report the order number and total from that result.
-  Placing an order takes payment, so it needs a quick approval — that's expected.
+- A customer may order one or more drinks. First collect every item (drink, size, milk, quantity).
+  You never price drinks yourself — `quote_order` is the only source of prices, for both answering
+  "how much?" and totaling an order. To place an order, do two steps in order: (1) call `quote_order`
+  with the items to get the exact total; (2) call `place_order` with those same items and
+  `quoted_total` set to the exact total string `quote_order` returned. Then report the order number
+  and total from the receipt. Placing an order takes payment, so it needs a quick approval.
 - Keep replies warm and brief, like a real counter chat. If the customer is unsure, suggest
   something you'd recommend."""
 
@@ -161,14 +169,7 @@ async def get_menu() -> str:
         "London fog — Earl Grey, vanilla, and steamed milk.\n"
         "Golden milk — turmeric, ginger, honey, and steamed milk. No caffeine.\n"
         "Hot chocolate — dark chocolate and steamed milk.\n"
-        "Steamer — steamed milk and a syrup (vanilla, brown sugar, lavender, rose). No caffeine.\n"
-        "\n"
-        "PRICING (quote this exactly — it's what the register charges)\n"
-        f"Small ${SIZE_PRICE_CENTS['small'] / 100:.2f}, "
-        f"Medium ${SIZE_PRICE_CENTS['medium'] / 100:.2f}, "
-        f"Large ${SIZE_PRICE_CENTS['large'] / 100:.2f}.\n"
-        f"Add ${ALT_MILK_SURCHARGE_CENTS / 100:.2f} for a non-dairy milk "
-        f"({', '.join(sorted(ALT_MILKS))})."
+        "Steamer — steamed milk and a syrup (vanilla, brown sugar, lavender, rose). No caffeine."
     )
 
 
@@ -230,6 +231,22 @@ async def check_ingredient(item: str) -> str:
     return f"Top match for {item!r}: {name}. Allergens: {allergen_text}. Tagged: {diet_text}."
 
 
+@agent.tool_defn(inherently_safe=True)
+async def quote_order(items: list[OrderItem]) -> str:
+    """Price a cart BEFORE placing it, so you can tell the customer the total and hand the exact
+    figure to `place_order`. Pure Python — the model never does the arithmetic, it just relays
+    this. Returns the per-line breakdown and the exact total; pass that total to
+    `place_order(quoted_total=...)` verbatim.
+
+    `items` is the cart: each entry is a drink with its milk, size, and quantity."""
+    lines, total_cents = _price_order(items)
+    line_text = "\n".join(
+        f"  • {_describe_item(it)} — {_fmt_cents(line_total)}" for it, line_total in lines
+    )
+    total = _fmt_cents(total_cents)
+    return f'{line_text}\n  Total: {total}\nPass quoted_total="{total}" to place_order.'
+
+
 @agent.activity_tool_defn(
     inherently_safe=False,  # takes payment -> gated for human approval (HITL)
     activity_config=ActivityConfig(
@@ -239,18 +256,39 @@ async def check_ingredient(item: str) -> str:
         ),
     ),
 )
-async def place_order(items: list[OrderItem], idempotency_key: agent.Injected[str]) -> str:
+async def place_order(
+    items: list[OrderItem],
+    quoted_total: Annotated[
+        str,
+        Field(
+            description="The exact total string returned by quote_order, e.g. '$17.80'. You MUST "
+            "call quote_order first and copy its total here verbatim — never compute it, guess, "
+            "or pass 0. place_order rejects a total that doesn't match the register."
+        ),
+    ],
+    idempotency_key: agent.Injected[str],
+) -> str:
     """Charge for a whole order (one or more drinks) and send it to the counter. Requires
-    approval before it runs.
+    approval before it runs — the approver sees the items and `quoted_total` on the card.
 
     Runs as a durable Temporal activity against the café POS. The total is computed HERE in
     Python from `items` — never by the model — so it's always right and matches what the POS
-    charges. `idempotency_key` is supplied by the workflow (the model never sets it): the POS
-    dedupes on it, so a retry, or a resume after a worker crash mid-charge, returns the same
-    order instead of charging twice.
+    charges. `quoted_total` is the figure `quote_order` produced and the customer approved; this
+    tool re-derives the total and refuses if they disagree, so the amount on the card is always
+    the amount charged. `idempotency_key` is supplied by the workflow (the model never sets it):
+    the POS dedupes on it, so a retry, or a resume after a worker crash mid-charge, returns the
+    same order instead of charging twice.
 
     `items` is the cart: each entry is a drink with its milk, size, and quantity."""
     lines, total_cents = _price_order(items)
+    authoritative_total = _fmt_cents(total_cents)
+    if quoted_total.strip() != authoritative_total:
+        raise ApplicationError(
+            f"quoted_total {quoted_total!r} doesn't match the register total "
+            f"{authoritative_total} for these items — call quote_order again and place the "
+            f"order with the exact total it returns.",
+            non_retryable=True,
+        )
     description = "; ".join(_describe_item(it) for it in items)
 
     async with httpx.AsyncClient(timeout=10.0, headers={"User-Agent": HTTP_UA}) as client:
@@ -280,8 +318,8 @@ async def place_order(items: list[OrderItem], idempotency_key: agent.Injected[st
 
 # The agent's full toolset. Pass this to AgentKitPlugin(tools=...) on the worker: it
 # registers the durable activity bodies of the activity tools (check_ingredient, place_order)
-# and skips the inline ones (get_menu, check_milk), which have no worker-side body.
-TOOLS = [get_menu, check_milk, check_ingredient, place_order]
+# and skips the inline ones (get_menu, check_milk, quote_order), which have no worker-side body.
+TOOLS = [get_menu, check_milk, quote_order, check_ingredient, place_order]
 
 
 @agent.defn(name="BaristaAgent")
@@ -322,6 +360,7 @@ class BaristaAgentWorkflow:
                 as_openai_agent_tool(self._runner, get_menu),
                 as_openai_agent_tool(self._runner, check_milk),
                 as_openai_agent_tool(self._runner, check_ingredient),
+                as_openai_agent_tool(self._runner, quote_order),
                 as_openai_agent_tool(
                     self._runner,
                     place_order,
