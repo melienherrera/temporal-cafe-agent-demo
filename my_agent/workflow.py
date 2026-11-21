@@ -40,6 +40,29 @@ SIZE_PRICE_CENTS = {"small": 450, "medium": 525, "large": 600}
 ALT_MILK_SURCHARGE_CENTS = 65
 ALT_MILKS = {"oat", "almond", "cashew", "soy", "coconut"}
 
+# Food menu: name -> (price_cents, ingredients). Pastries are priced here in Python, like drinks —
+# the model never prices them. Ingredients are listed so the agent can screen for allergens and
+# verify anything uncertain with check_ingredient before recommending an item.
+FOOD_MENU: dict[str, tuple[int, str]] = {
+    "butter croissant": (395, "butter, wheat flour, yeast, salt"),
+    "pain au chocolat": (425, "butter, wheat flour, dark chocolate, yeast"),
+    "almond croissant": (495, "butter, wheat flour, almond frangipane (almonds), powdered sugar"),
+    "blueberry muffin": (375, "wheat flour, egg, butter, blueberries, sugar"),
+    "cinnamon roll": (450, "wheat flour, butter, egg, cinnamon, cream cheese"),
+    "lemon poppyseed loaf": (400, "wheat flour, egg, butter, lemon, poppy seeds"),
+    "chocolate chip cookie": (325, "wheat flour, butter, egg, chocolate chips, brown sugar"),
+    "everything bagel": (350, "wheat flour, yeast, sesame, poppy seeds, garlic, onion"),
+    "fruit danish": (425, "wheat flour, butter, egg, seasonal fruit, custard"),
+    "pecan sticky bun": (475, "wheat flour, butter, egg, pecans, caramel"),
+    "pistachio financier": (450, "egg white, butter, pistachios, almond flour, sugar"),
+    "baklava": (425, "phyllo pastry, walnuts, pistachios, honey, butter"),
+    "banana walnut bread": (395, "wheat flour, egg, butter, banana, walnuts"),
+    "vegan blueberry muffin": (395, "wheat flour, coconut oil, blueberries, oat milk, sugar"),
+    "vegan chocolate chip cookie": (350, "wheat flour, coconut oil, dark chocolate, brown sugar"),
+    "vegan oat & seed bar": (375, "oats, sunflower seeds, pumpkin seeds, maple syrup, coconut oil"),
+    "vegan banana walnut muffin": (415, "wheat flour, banana, walnuts, coconut oil, oat milk"),
+}
+
 
 def _price_cents(size: str, milk: str) -> int:
     """Unit price of one drink, in cents, from its size and milk. Pure Python — the model
@@ -60,14 +83,41 @@ class OrderItem(BaseModel):
     quantity: int = Field(1, ge=1, description="How many of this exact drink.")
 
 
-def _price_order(items: list[OrderItem]) -> tuple[list[tuple[OrderItem, int]], int]:
-    """Itemize and total a cart, in cents — all arithmetic in Python, none in the model.
+class FoodItem(BaseModel):
+    """One food line in an order — a pastry or snack. The model fills these from the conversation
+    (names come from get_food); it does not price them."""
 
-    Returns (lines, total_cents) where each line is (item, line_total_cents) and a line total
-    is the unit price times quantity."""
-    lines = [(it, _price_cents(it.size, it.milk) * it.quantity) for it in items]
+    name: str = Field(
+        ..., description="The food item's name, exactly as listed in get_food, e.g. 'butter croissant'."
+    )
+    quantity: int = Field(1, ge=1, description="How many of this item.")
+
+
+def _food_price_cents(name: str) -> int | None:
+    """Unit price of one food item, in cents, or None if we don't carry it."""
+    entry = FOOD_MENU.get(name.strip().lower())
+    return entry[0] if entry else None
+
+
+def _price_cart(
+    items: list[OrderItem], food: list[FoodItem]
+) -> tuple[list[tuple[str, int]], int, list[str]]:
+    """Price a full cart (drinks + food), in cents — all arithmetic in Python, none in the model.
+
+    Returns (lines, total_cents, unknown_food): each line is (description, line_total_cents) and a
+    line total is unit price times quantity. Food names we don't carry are collected, not priced."""
+    lines: list[tuple[str, int]] = []
+    unknown: list[str] = []
+    for it in items:
+        lines.append((_describe_item(it), _price_cents(it.size, it.milk) * it.quantity))
+    for f in food:
+        unit = _food_price_cents(f.name)
+        if unit is None:
+            unknown.append(f.name)
+            continue
+        lines.append((_describe_food(f), unit * f.quantity))
     total_cents = sum(line_total for _, line_total in lines)
-    return lines, total_cents
+    return lines, total_cents, unknown
 
 
 def _fmt_cents(cents: int) -> str:
@@ -80,6 +130,11 @@ def _describe_item(it: OrderItem) -> str:
     qty = f"{it.quantity}x " if it.quantity != 1 else ""
     return f"{qty}{it.size} {it.drink} ({it.milk} milk)"
 
+
+def _describe_food(f: FoodItem) -> str:
+    qty = f"{f.quantity}x " if f.quantity != 1 else ""
+    return f"{qty}{f.name}"
+
 SYSTEM_INSTRUCTION = """\
 You are a warm, friendly barista at Melissa's Café. Customers order in plain language and may
 not know exactly what they want.
@@ -88,16 +143,20 @@ How you work:
 - If the order is vague about something that matters (size, strength, hot vs iced, milk,
   sweetness), ask ONE short, friendly clarifying question before making anything. One good
   question at a time — don't interrogate.
-- Stay honest with your tools: call `get_menu` to see what's on offer, and `check_milk` before
-  promising a milk — don't guess what's in stock.
+- Stay honest with your tools: call `get_menu` for drinks and `get_food` for pastries/snacks to see
+  what's on offer, and `check_milk` before promising a milk — don't guess what's in stock.
 - If the customer asks about allergens or dietary fit (vegan, gluten, nut-free, "is oat milk
   dairy?"), call `check_ingredient` to look it up before answering. Don't guess dietary facts.
-- A customer may order one or more drinks. First collect every item (drink, size, milk, quantity).
-  You never price drinks yourself — `quote_order` is the only source of prices, for both answering
-  "how much?" and totaling an order. To place an order, do two steps in order: (1) call `quote_order`
-  with the items to get the exact total; (2) call `place_order` with those same items and
-  `quoted_total` set to the exact total string `quote_order` returned. Then report the order number
-  and total from the receipt. Placing an order takes payment, so it needs a quick approval.
+- Remember any allergy or diet a customer mentions for the rest of the chat. When they ask what
+  food is safe, call `get_food`, read each item's ingredients, use `check_ingredient` to verify
+  anything you're unsure about, and recommend ONLY items you've confirmed are safe for them.
+- A customer may order drinks and/or food. First collect everything — drinks (drink, size, milk,
+  quantity) and food (name, quantity). You never price anything yourself — `quote_order` is the only
+  source of prices, for both answering "how much?" and totaling an order. To place an order, do two
+  steps in order: (1) call `quote_order` with the drinks and food to get the exact total; (2) call
+  `place_order` with those same drinks and food and `quoted_total` set to the exact total string
+  `quote_order` returned. Then report the order number and total from the receipt. Placing an order
+  takes payment, so it needs a quick approval.
 - Keep replies warm and brief, like a real counter chat. If the customer is unsure, suggest
   something you'd recommend."""
 
@@ -174,6 +233,19 @@ async def get_menu() -> str:
 
 
 @agent.tool_defn(inherently_safe=True)
+async def get_food() -> str:
+    """Return the café's food menu (pastries and snacks), each with its ingredients so you can
+    screen for allergens. Prices come from quote_order, not here."""
+    lines = "\n".join(
+        f"{name.title()} — {ingredients}" for name, (_price, ingredients) in FOOD_MENU.items()
+    )
+    return (
+        "FOOD MENU (ingredients listed so you can check allergens; ask quote_order for prices)\n"
+        + lines
+    )
+
+
+@agent.tool_defn(inherently_safe=True)
 async def check_milk(kind: str) -> str:
     """Check whether a milk is in stock. `kind` is a milk name, e.g. "oat", "cashew", "whole"."""
     stock = {
@@ -232,17 +304,23 @@ async def check_ingredient(item: str) -> str:
 
 
 @agent.tool_defn(inherently_safe=True)
-async def quote_order(items: list[OrderItem]) -> str:
+async def quote_order(items: list[OrderItem], food: list[FoodItem]) -> str:
     """Price a cart BEFORE placing it, so you can tell the customer the total and hand the exact
     figure to `place_order`. Pure Python — the model never does the arithmetic, it just relays
     this. Returns the per-line breakdown and the exact total; pass that total to
     `place_order(quoted_total=...)` verbatim.
 
-    `items` is the cart: each entry is a drink with its milk, size, and quantity."""
-    lines, total_cents = _price_order(items)
-    line_text = "\n".join(
-        f"  • {_describe_item(it)} — {_fmt_cents(line_total)}" for it, line_total in lines
-    )
+    `items` is the drinks (drink, milk, size, quantity); `food` is the pastries/snacks (name,
+    quantity). Either list may be empty, but include everything the customer is ordering."""
+    lines, total_cents, unknown = _price_cart(items, food)
+    if unknown:
+        return (
+            f"I don't recognize these food items: {', '.join(unknown)}. "
+            "Check get_food for the exact names."
+        )
+    if not lines:
+        return "Nothing to quote yet — add at least one drink or food item."
+    line_text = "\n".join(f"  • {desc} — {_fmt_cents(line_total)}" for desc, line_total in lines)
     total = _fmt_cents(total_cents)
     return f'{line_text}\n  Total: {total}\nPass quoted_total="{total}" to place_order.'
 
@@ -258,56 +336,67 @@ async def quote_order(items: list[OrderItem]) -> str:
 )
 async def place_order(
     items: list[OrderItem],
+    food: list[FoodItem],
     quoted_total: Annotated[
         str,
         Field(
             description="The exact total string returned by quote_order, e.g. '$17.80'. You MUST "
-            "call quote_order first and copy its total here verbatim — never compute it, guess, "
-            "or pass 0. place_order rejects a total that doesn't match the register."
+            "call quote_order first (with the drinks and food) and copy its total here verbatim — "
+            "never compute it, guess, or pass 0. place_order rejects a total that doesn't match."
         ),
     ],
     idempotency_key: agent.Injected[str],
 ) -> str:
-    """Charge for a whole order (one or more drinks) and send it to the counter. Requires
+    """Charge for a whole order (drinks and/or food) and send it to the counter. Requires
     approval before it runs — the approver sees the items and `quoted_total` on the card.
 
     Runs as a durable Temporal activity against the café POS. The total is computed HERE in
-    Python from `items` — never by the model — so it's always right and matches what the POS
-    charges. `quoted_total` is the figure `quote_order` produced and the customer approved; this
-    tool re-derives the total and refuses if they disagree, so the amount on the card is always
-    the amount charged. `idempotency_key` is supplied by the workflow (the model never sets it):
-    the POS dedupes on it, so a retry, or a resume after a worker crash mid-charge, returns the
-    same order instead of charging twice.
+    Python from `items` and `food` — never by the model — so it's always right and matches what
+    the POS charges. `quoted_total` is the figure `quote_order` produced and the customer approved;
+    this tool re-derives the total and refuses if they disagree, so the amount on the card is always
+    the amount charged. `idempotency_key` is supplied by the workflow (the model never sets it): the
+    POS dedupes on it, so a retry, or a resume after a worker crash mid-charge, returns the same
+    order instead of charging twice.
 
-    `items` is the cart: each entry is a drink with its milk, size, and quantity."""
-    lines, total_cents = _price_order(items)
+    `items` is the drinks; `food` is the pastries/snacks. Either may be empty, but not both."""
+    lines, total_cents, unknown = _price_cart(items, food)
+    if unknown:
+        raise ApplicationError(
+            f"These food items aren't on the menu: {', '.join(unknown)}. Check get_food for the "
+            "exact names, then re-quote and place the order.",
+            non_retryable=True,
+        )
+    if not lines:
+        raise ApplicationError(
+            "Nothing to place — the order has no drinks or food.", non_retryable=True
+        )
     authoritative_total = _fmt_cents(total_cents)
     if quoted_total.strip() != authoritative_total:
         raise ApplicationError(
             f"quoted_total {quoted_total!r} doesn't match the register total "
-            f"{authoritative_total} for these items — call quote_order again and place the "
+            f"{authoritative_total} for this order — call quote_order again and place the "
             f"order with the exact total it returns.",
             non_retryable=True,
         )
-    description = "; ".join(_describe_item(it) for it in items)
+    description = "; ".join(desc for desc, _ in lines)
 
+    milks = {it.milk for it in items}
+    sizes = {it.size for it in items}
     async with httpx.AsyncClient(timeout=10.0, headers={"User-Agent": HTTP_UA}) as client:
         resp = await client.post(
             f"{POS_URL}/orders",
             json={
                 "idempotency_key": idempotency_key,
                 "drink": description,
-                "milk": "mixed" if len({it.milk for it in items}) > 1 else items[0].milk,
-                "size": "mixed" if len({it.size for it in items}) > 1 else items[0].size,
+                "milk": "mixed" if len(milks) > 1 else (next(iter(milks)) if milks else "n/a"),
+                "size": "mixed" if len(sizes) > 1 else (next(iter(sizes)) if sizes else "n/a"),
                 "amount_cents": total_cents,
             },
         )
         resp.raise_for_status()
         receipt = resp.json()
 
-    line_text = "\n".join(
-        f"  • {_describe_item(it)} — ${line_total / 100:.2f}" for it, line_total in lines
-    )
+    line_text = "\n".join(f"  • {desc} — {_fmt_cents(line_total)}" for desc, line_total in lines)
     total = receipt["amount_cents"] / 100
     note = " (already paid — not charged again)" if receipt.get("deduped") else ""
     return (
@@ -318,8 +407,8 @@ async def place_order(
 
 # The agent's full toolset. Pass this to AgentKitPlugin(tools=...) on the worker: it
 # registers the durable activity bodies of the activity tools (check_ingredient, place_order)
-# and skips the inline ones (get_menu, check_milk, quote_order), which have no worker-side body.
-TOOLS = [get_menu, check_milk, quote_order, check_ingredient, place_order]
+# and skips the inline ones (get_menu, get_food, check_milk, quote_order), which have no worker-side body.
+TOOLS = [get_menu, get_food, check_milk, quote_order, check_ingredient, place_order]
 
 
 @agent.defn(name="BaristaAgent")
@@ -358,6 +447,7 @@ class BaristaAgentWorkflow:
             model=DEFAULT_MODEL,
             tools=[
                 as_openai_agent_tool(self._runner, get_menu),
+                as_openai_agent_tool(self._runner, get_food),
                 as_openai_agent_tool(self._runner, check_milk),
                 as_openai_agent_tool(self._runner, check_ingredient),
                 as_openai_agent_tool(self._runner, quote_order),
